@@ -1,0 +1,13 @@
+{
+  "//": "Example VBCDX_AGENTS_INTEGRATIONS_FILE fragment for the coolify service. The dev-agents installer reads this; save `vbcdx-coolify manifest` output as manifest_file. All paths are absolute literals; credential-map keys are canonical agent ids.",
+  "schema_version": 1,
+  "services": {
+    "coolify": {
+      "server_name": "coolify",
+      "manifest_file": "/home/example/.config/vbcdx/manifests/coolify.json",
+      "credentials": {
+        "devops-agent": "/home/example/.config/vbcdx/coolify/devops-agent.env"
+      }
+    }
+  }
+}

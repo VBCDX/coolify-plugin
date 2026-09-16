@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Node version
+        run: node --version
+
+      - name: Install (clean, from lockfile)
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Manifest is deterministic and parseable
+        run: |
+          node bin/vbcdx-coolify.js manifest > /tmp/m1.json
+          node bin/vbcdx-coolify.js manifest > /tmp/m2.json
+          diff /tmp/m1.json /tmp/m2.json
+          node -e "const m=require('/tmp/m1.json'); if(m.tools.length!==27){throw new Error('expected 27 tools, got '+m.tools.length)}"
+
+      - name: CLI contract (help/version/unknown exit code)
+        run: |
+          node bin/vbcdx-coolify.js --version
+          node bin/vbcdx-coolify.js --help > /dev/null
+          if node bin/vbcdx-coolify.js frobnicate; then echo "unknown command should have exited nonzero" && exit 1; fi

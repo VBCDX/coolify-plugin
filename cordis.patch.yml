@@ -1,0 +1,32 @@
+# DSH bundle patch for @vbcdx/coolify-plugin (contract vbcdx.coolify/1).
+#
+# This inserts one @deepseek-ai/dsh-mcp-client row that launches this package's
+# stdio MCP server. The bridge exposes tools as mcp__coolify__<raw_name>.
+#
+# The operator supplies a concrete absolute VBCDX_COOLIFY_ENTRYPOINT naming this
+# installed package's bin/vbcdx-coolify.js before starting the DSH profile. For a
+# native profile installation its documented path is:
+#   <DSH_HOME>/profiles/<profile>/node_modules/@vbcdx/coolify-plugin/bin/vbcdx-coolify.js
+# Resolve/verify the real installed file and run its --help/--version before boot;
+# an empty or missing path is a failed registration, never a success.
+#
+# process.execPath selects the DSH runtime's Node (supported Node >=22). This is a
+# bridge-only nonsecret launch setting, not a server CLI argument or credential
+# selector — the server takes no secret/URL/role/credential CLI options. Per-call
+# credential files are passed as the credential_file tool argument, never here.
+- insert:
+    - id: mcp-coolify
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: coolify
+        transport: stdio
+        command: !!js "process.execPath"
+        args:
+          - !!js "(() => { const p = process.env.VBCDX_COOLIFY_ENTRYPOINT; if (!p || !process.getBuiltinModule('node:path').isAbsolute(p)) throw new Error('Set VBCDX_COOLIFY_ENTRYPOINT to the absolute installed entrypoint'); return p; })()"
+          - mcp
+        env:
+          VBCDX_COOLIFY_URL: !!js "(process.env.VBCDX_COOLIFY_URL || '')"
+          VBCDX_COOLIFY_WRITES: !!js "(process.env.VBCDX_COOLIFY_WRITES || 'off')"
+          VBCDX_COOLIFY_TIMEOUT_MS: !!js "(process.env.VBCDX_COOLIFY_TIMEOUT_MS || '30000')"
+        toolCallTimeoutMs: 35000
+        failOnStartupError: false

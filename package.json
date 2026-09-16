@@ -1,0 +1,47 @@
+{
+  "name": "@vbcdx/coolify-plugin",
+  "version": "0.1.0",
+  "description": "MCP server for a bounded, write-controlled subset of the Coolify v4 API (contract vbcdx.coolify/1).",
+  "type": "module",
+  "license": "MIT",
+  "author": "VBCDX Team",
+  "bin": {
+    "vbcdx-coolify": "bin/vbcdx-coolify.js"
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./manifest": "./src/manifest.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "manifest": "node bin/vbcdx-coolify.js manifest"
+  },
+  "keywords": [
+    "mcp",
+    "coolify",
+    "vbcdx",
+    "dsh"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "plugin": true,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "bin",
+    "src",
+    "cordis.patch.yml",
+    "examples",
+    "README.md"
+  ]
+}

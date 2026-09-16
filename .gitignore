@@ -1,0 +1,8 @@
+node_modules/
+*.log
+*.tgz
+.DS_Store
+# Never commit real credential files
+*.env
+!.env.example
+.npmrc

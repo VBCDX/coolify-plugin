@@ -1,0 +1,13 @@
+{
+  "mcp": {
+    "coolify": {
+      "type": "local",
+      "command": ["node", "/absolute/package/bin/vbcdx-coolify.js", "mcp"],
+      "enabled": true,
+      "environment": {
+        "VBCDX_COOLIFY_URL": "https://coolify.example.com",
+        "VBCDX_COOLIFY_WRITES": "off"
+      }
+    }
+  }
+}
