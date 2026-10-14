@@ -1,4 +1,4 @@
-// Input validation (§6).
+// Input validation (contract §6).
 //
 // Each tool declares a JSON-Schema-shaped inputSchema that is the single source
 // for both the manifest the model reads and this validator. Unknown inputs are

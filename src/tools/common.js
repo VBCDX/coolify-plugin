@@ -1,6 +1,6 @@
 // Shared building blocks for tool definitions.
 //
-// The honest-results rules (§5) live here so every tool applies them the same
+// The honest-results rules (contract §5) live here so every tool applies them the same
 // way: HTTP status is checked before body shape; a 2xx alone is never treated as
 // completion; a missing documented identifier is indeterminate, not a safe
 // retry; reads never turn an error into an empty list.
@@ -63,7 +63,7 @@ export const offsetField = { type: 'integer', minimum: 0, default: 0, descriptio
 export const limitField = { type: 'integer', minimum: 1, maximum: 100, default: 25, description: 'Local window size 1–100 (default 25).' };
 
 /**
- * Apply a local offset/limit window over a fully-read upstream array (§6).
+ * Apply a local offset/limit window over a fully-read upstream array (contract §6).
  *
  * @param {any[]} array
  * @param {number} offset
@@ -125,7 +125,7 @@ export function mapTransportError(err, effect, request, opts = {}) {
 
 /**
  * Map a non-2xx HTTP status to a failed envelope, preserving safe status and
- * Retry-After. HTTP status is the first check (§5): a body claiming success at a
+ * Retry-After. HTTP status is the first check (contract §5): a body claiming success at a
  * failure status is still a failure.
  *
  * @param {{status:number, retryAfter:string|null}} res

@@ -1,4 +1,4 @@
-// Destructive tools (§5). These can interrupt service or discard work/data, so
+// Destructive tools (contract §5). These can interrupt service or discard work/data, so
 // they require VBCDX_COOLIFY_WRITES=full and an exact confirmation string that
 // binds the normalized target and options. The confirmation is an accident
 // interlock — it is never sent upstream and is not proof of human approval.

@@ -1,281 +1,183 @@
 # @vbcdx/coolify-plugin
 
-An MCP server for a **bounded, write-controlled** subset of the [Coolify](https://coolify.io)
-v4 API. Contract `vbcdx.coolify/1`. It gives an agent per-call credential-file
-selection, a fixed catalog of 27 tools, honest result reporting, and explicit
-accidental-write controls.
+An [MCP](https://modelcontextprotocol.io) server for the [Coolify](https://coolify.io) v4 API. It
+gives AI agents a fixed set of 27 tools for applications, deployments, environment variables,
+databases, services, projects and servers, with a write gate and verified results.
 
-> This README covers what the package needs to be installed and run. Exhaustive
-> tool-by-tool documentation and independent runtime verification are tracked
-> separately.
+- Runs over **stdio** (for a local agent harness) or **Streamable HTTP** (as a network service or
+  container).
+- **Write gate:** reads only by default. Writes and destructive operations need explicit opt-in.
+- **Per-call credentials:** each call names the credential file it uses, so several agents can
+  share one server with their own tokens.
+- **Verified results:** a write that cannot be confirmed is reported as unverified, never as
+  success, and is never retried. `deploy`, `start_application`, `restart_application`,
+  `stop_application` and `cancel_deployment` return `accepted`: Coolify took the request, but the
+  tool does not wait for the result.
 
-## What it is (and is not)
+Coolify also ships a native MCP endpoint. This package covers a smaller, fixed set of operations
+and adds per-call credentials and the write gate.
 
-Coolify ships a native MCP endpoint. This package deliberately adds per-call
-credential-file selection, a bounded catalog, and an accidental-write interlock.
-It does **not** replace every native capability or provide stronger authorization
-than the OS and the service token allow. Native endpoint enablement,
-infrastructure provisioning, backup/restore, arbitrary shell/API calls,
-private-key/cloud-token management, and rollback/pin-to-SHA are **out of scope in
-v1**.
-
-## Coolify's native MCP server
-
-Coolify has shipped its own MCP server since **v4.1.0** (18 May 2026), which added
-instance-level MCP with read-only tools over Coolify resources plus API/UI
-enablement controls. **v4.2.0** (21 Jul 2026) added per-team MCP, and later 4.3.x
-releases extended the tool surface (deploy and cancellation operations, gated by
-token scope). Coolify's release cadence is its own; for the authoritative, current
-capability list, follow the vendor docs rather than this README.
-
-**Enabling it (self-hosted).** Settings → Configuration → Advanced → **API and
-MCP**: enable **API access**, then set **MCP server** to **Enabled**. It must
-*also* be enabled for the active team ("Enabled for this team" in that team's
-settings). Coolify Cloud has instance MCP enabled already, with team access on by
-default.
-
-**Connecting.** Endpoint `https://<your-coolify-host>/mcp`, transport **Streamable
-HTTP**, header `Authorization: Bearer <token>`. Tokens come from **Keys & Tokens →
-API Tokens** while the target team is active. Scope the token to the least
-privilege the client needs: `read` for inspection, `read:sensitive` for sensitive
-values and log summaries, `deploy` for deploy/start/stop/restart/cancel. Coolify's
-docs advise against using `root` for ordinary clients. A client denied by team
-settings gets `403`; consult the docs for the current, exact failure modes.
-
-- <https://coolify.io/docs/mcp/what-is-mcp>
-- <https://coolify.io/docs/mcp/setup>
-
-### Native MCP vs. this package
-
-If you want direct, full-surface access to a Coolify instance from a single team's
-token, and you trust the caller with whatever that token permits, **the native MCP
-server is sufficient** — reach for it first. This package exists for a narrower
-situation: several agents that each present their own credential file per call, a
-fixed and auditable catalog rather than Coolify's evolving full surface, an
-accidental-write interlock (`off` / `write` / `full`, plus a confirmation string on
-destructive tools), and result envelopes that refuse to over-claim an unverified
-outcome. It deliberately covers *less* than native MCP; use it when per-call
-credential isolation and write-blast-radius control matter more than breadth.
+The full specification is in [docs/contract.md](docs/contract.md).
 
 ## Requirements
 
-- Node.js **>= 22** (tested on Node 22 and 24).
-- Runnable JavaScript, no build step. One runtime dependency: the maintained
-  `@modelcontextprotocol/sdk` (pinned).
+- Node.js 22 or later
+- A Coolify v4 instance and an API token for it
 
 ## Install
 
-This package is not yet published to a public npm registry. Once a version is
-published and tested, the supported install will be:
-
 ```sh
-npm install @vbcdx/coolify-plugin
+npm install -g @vbcdx/coolify-plugin
 ```
 
-Until then, install a packed, reviewed artifact into a clean prefix and register
-the absolute entrypoint. From an immutable reviewed commit of your own checkout or
-mirror:
+This installs the `vbcdx-coolify` command. To run it without installing:
 
 ```sh
-npx --yes --package='<git-remote-url>#<reviewed-commit>' vbcdx-coolify mcp
+npx -y --package=@vbcdx/coolify-plugin vbcdx-coolify --help
 ```
 
-Substitute your git remote and the delivered commit, not a moving branch. An npm
-name/version launch command is advertised only after that version is published to
-a registry and tested.
-
-
-## Network mode (`serve`): MCP over Streamable HTTP
-
-`vbcdx-coolify serve` runs the same finite tool catalogue as an MCP server over the
-**Streamable HTTP** transport (stateless: a fresh server per request), for hosts that
-cannot run the stdio companion next to the agent — e.g. an MCP gateway (LiteLLM
-`true_passthrough`) or a harness container without Node.js.
-
-```sh
-VBCDX_COOLIFY_URL=https://coolify.example \
-VBCDX_COOLIFY_WRITES=off \
-npx vbcdx-coolify serve
-# → MCP endpoint:  POST http://0.0.0.0:8080/mcp
-# → liveness:      GET  http://0.0.0.0:8080/healthz
-```
-
-**Credentials per request, by header.** There is no credential file and no
-`credential_file` argument in this mode — the tool schemas drop it. The Coolify API
-token arrives in `Authorization: Bearer <token>` (or `token <token>`), is used for that
-one request, registered with the redactor and never cached or logged. Coolify has no
-password authentication, so there is no Basic scheme. Tool discovery works without a
-credential; a call without one returns a redacted `credential_missing` refusal before
-any Coolify request. The gate order (inputs → write gate → confirmation → server
-config → credential → HTTP), the write gate and the destructive confirmation are
-identical to stdio.
-
-A `POST /mcp` body larger than 1 MiB is refused with `413` before it is buffered
-(checked against `Content-Length` and, for chunked bodies, while reading); a body
-that is not JSON gets `400`. Both happen before any credential check or Coolify
-request.
-
-| Setting | Meaning |
-| --- | --- |
-| `VBCDX_COOLIFY_HTTP_PORT` | Listen port (default `8080`). |
-| `VBCDX_COOLIFY_HTTP_HOST` | Bind address (default `0.0.0.0`). `healthcheck` always probes `127.0.0.1`, so a specific non-loopback address makes the container report unhealthy; keep `0.0.0.0` (or a loopback address) in a container. |
-| `VBCDX_COOLIFY_TLS_CERT` / `VBCDX_COOLIFY_TLS_KEY` | Serve HTTPS directly (both or neither). |
-
-**Container.** `Dockerfile` builds `vbcdx-coolify serve` on a pinned Node 22 Alpine
-image as the unprivileged `node` user, with a `HEALTHCHECK` (`vbcdx-coolify
-healthcheck`, which probes `127.0.0.1:<port>/healthz`). No credential is baked into
-any layer. Plain HTTP is for trusted networks only; put TLS in front otherwise.
-
-For the main consumer of this mode, see [Using with Hermes Agent](#using-with-hermes-agent).
-
-## Using with Hermes Agent
-
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) (checked against
-v0.15.1, tag `v2026.5.29`) connects to MCP servers over stdio or Streamable HTTP.
-Use `serve` for Hermes, not the stdio companion.
-
-**Why `serve` and not stdio.** A Hermes agent keeps its config, `.env` and state in
-its own `HERMES_HOME`: one per profile, and `/opt/data` in the official container
-image. The stdio companion has to run next to the agent. It needs Node.js >= 22
-where the agent runs, plus a `0600` credential file on that same filesystem. A
-containerised Hermes, or one without Node.js, can't meet that from the host. With
-`serve`, Hermes only needs a URL and a header.
-
-**Request path.**
+## Usage
 
 ```text
-Hermes profile ──► LiteLLM (auth_type: true_passthrough) ──► vbcdx-coolify serve ──► Coolify API
-```
-
-Each Hermes profile holds its own Coolify API token and sends it as
-`Authorization: Bearer <token>` on every request. LiteLLM `true_passthrough`
-forwards the client's `Authorization` header verbatim and stores nothing. `serve`
-uses the token for that one request only. It never caches or logs it (see above).
-The token's Coolify permissions, and `VBCDX_COOLIFY_WRITES` on the `serve` host,
-bound what each agent can do. You can also point Hermes straight at `serve` and
-skip LiteLLM; the Hermes config below is the same apart from the URL.
-
-**Hermes config.** Add to `mcp_servers` in the profile's
-`$HERMES_HOME/config.yaml` (`~/.hermes/config.yaml` by default). A `url` entry
-uses Streamable HTTP. Hermes resolves `${VAR}` in the entry from the
-environment, including the profile's `$HERMES_HOME/.env`, so the token stays out
-of `config.yaml`:
-
-```yaml
-mcp_servers:
-  coolify:
-    url: "https://litellm.example/coolify/mcp"   # or https://coolify-mcp.example/mcp for serve directly
-    headers:
-      Authorization: "Bearer ${COOLIFY_API_TOKEN}"
-```
-
-```sh
-# $HERMES_HOME/.env — one token per profile (agent)
-COOLIFY_API_TOKEN=<this-agent's-coolify-api-token>
-```
-
-The LiteLLM server entry for `serve` needs `auth_type: true_passthrough`. The path
-segment (`coolify` above) is that entry's name in LiteLLM's `mcp_servers`.
-
-## Configuration (environment only)
-
-The server takes **no** secret, URL, role, or credential CLI options.
-Configuration comes from the environment:
-
-| Variable | Meaning |
-| --- | --- |
-| `VBCDX_COOLIFY_URL` | Coolify instance URL. Required for any API call. An optional deployment path prefix and an optional trailing `/api/v1` are accepted; the API suffix is appended exactly once. Userinfo/query/fragment are rejected. Plain HTTP is allowed on a trusted network (noted once); TLS verification is never disabled. |
-| `VBCDX_COOLIFY_WRITES` | `off` (default), `write`, or `full`. `off` permits reads only; `write` also permits ordinary configuration/deploy writes; `full` additionally permits destructive tools. An invalid value behaves as `off`. |
-| `VBCDX_COOLIFY_TIMEOUT_MS` | Total per-call budget, integer 1000–120000 (default 30000). Spans the credential read, any preflight, the mutation, and verification. |
-
-## Credentials
-
-Every tool except public `health` takes an explicit absolute `credential_file`
-argument at call time. The file is read fresh on each call (one snapshot per call
-so a rotation cannot switch identity midway). There is no token/URL/role option,
-directory scan, home-directory search, ambient secret, or between-call cache.
-
-The file must be a regular, non-symlink file owned by you at mode `0600`, in an
-immediate parent directory owned by you at mode `0700`, with no symlink component
-in the path. It contains `VBCDX_AGENTS_ROLE` (descriptive) and a nonblank
-`VBCDX_AGENTS_TOKEN`. The token is sent as `Authorization: Bearer <token>`;
-Coolify has no password fallback. See
-[`examples/credential-file.env.example`](examples/credential-file.env.example).
-Every environment variable the server reads is listed in [`.env.example`](.env.example).
-
-Token permissions (`read`, `read:sensitive`, `write`, `deploy`, `root`) are the
-token's, scoped to its team and role. A deploy-only token is legitimate. The
-server never infers permission from the role, decodes token authority, or retries
-a 403 with another identity.
-
-## Commands
-
-```sh
-vbcdx-coolify mcp        # stdio MCP server (protocol frames on stdout; diagnostics on stderr)
-vbcdx-coolify manifest   # deterministic nonsecret JSON tool contract (no network, no credential reads)
+vbcdx-coolify mcp          Start the stdio MCP server (default)
+vbcdx-coolify serve        Start the network MCP server (Streamable HTTP)
+vbcdx-coolify healthcheck  Probe a running serve endpoint; exit 0 if healthy
+vbcdx-coolify manifest     Print the JSON tool manifest
 vbcdx-coolify --help
 vbcdx-coolify --version
 ```
 
-Unknown commands or options exit `2`.
+### Register with an MCP client
 
-## Registration
+Claude Code:
 
-The MCP identity is `coolify`. See
-[`examples/mcp-registration.md`](examples/mcp-registration.md) for Claude Code,
-Codex, OpenCode, and DSH. The tool catalog is discoverable without credentials; a
-call without credentials returns an actionable error, not a crash.
+```sh
+claude mcp add coolify --scope user \
+  -e VBCDX_COOLIFY_URL=https://coolify.example.com \
+  -e VBCDX_COOLIFY_WRITES=off \
+  -- vbcdx-coolify mcp
+```
 
-## Write controls and honest results
+Codex:
 
-- Every tool declares an effect: `read`, `write`, or `destructive`. Gates run
-  before any file read or HTTP call, and all tools remain listed even when
-  disabled.
-- Destructive tools (`restart_application`, `stop_application`,
-  `cancel_deployment`, `delete_application_env`, `delete_application`) require
-  `VBCDX_COOLIFY_WRITES=full` and an exact confirmation string that binds the
-  normalized target and options. The confirmation is an **accident interlock**,
-  not proof of human approval, and is never sent upstream.
-- Results never over-claim. HTTP status is checked before body shape (a `403`
-  with `success:true` is a failure). A `2xx` alone is not completion. A read never
-  turns an error into an empty list. A mutation whose outcome cannot be confirmed
-  is `unverified` or `indeterminate` and is **never** replayed.
+```sh
+codex mcp add coolify \
+  --env VBCDX_COOLIFY_URL=https://coolify.example.com \
+  --env VBCDX_COOLIFY_WRITES=off \
+  -- vbcdx-coolify mcp
+```
 
-Each result carries `outcome`, `effect`, `request:{method,path,attempted}`,
-`verification`, and — for failures — a fixed `reason` and a secret-free `message`.
+For OpenCode, see [examples/opencode.json](examples/opencode.json). More detail is in
+[examples/mcp-registration.md](examples/mcp-registration.md).
 
-## Tool catalog (27)
+The package also ships a [`vbcdx.json`](vbcdx.json) declaration, so the
+[vbcdx installer](https://github.com/VBCDX/vbcdx) can register it for you:
 
-Reads (17): `health`, `version`, `list_applications`, `get_application`,
-`get_application_logs`, `list_application_envs`, `list_databases`, `get_database`,
-`list_services`, `get_service`, `list_projects`, `get_project`, `list_servers`,
-`get_server`, `list_resources`, `list_deployments`, `get_deployment`.
+```sh
+npm install -g @vbcdx/vbcdx
+vbcdx install tool @vbcdx/coolify-plugin --harness=claude
+```
 
-Writes (5): `create_application`, `deploy`, `start_application`,
-`create_application_env`, `update_application_env`.
+## Configuration
 
-Destructive (5): `restart_application`, `stop_application`, `cancel_deployment`,
-`delete_application_env`, `delete_application`.
+Settings are read from the environment once, at startup. See [.env.example](.env.example).
 
-Run `vbcdx-coolify manifest` for the exact input/output schemas, effects, and
-required permissions.
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VBCDX_COOLIFY_URL` | none | Coolify instance URL, optionally ending in `/api/v1`. Required for any API call. |
+| `VBCDX_COOLIFY_WRITES` | `off` | `off` (reads only), `write` (configuration and deploy writes), or `full` (also destructive tools). |
+| `VBCDX_COOLIFY_TIMEOUT_MS` | `30000` | Total deadline per tool call, 1000 to 120000 ms. |
+
+Tools are always listed. A call made without valid configuration or credentials returns an error
+explaining what is missing.
+
+### Credentials (stdio mode)
+
+Credentials are never passed on the command line or in the environment. Every tool except
+`health` takes a `credential_file` argument: the absolute path to a file like this:
+
+```sh
+VBCDX_AGENTS_ROLE=devops-agent
+VBCDX_AGENTS_TOKEN=<coolify api token>
+```
+
+The file must be a regular file you own with mode `0600`, in a directory with mode `0700`:
+
+```sh
+install -d -m 0700 ~/.config/vbcdx/coolify
+install -m 0600 /dev/null ~/.config/vbcdx/coolify/devops-agent.env
+```
+
+The token is sent as `Authorization: Bearer <token>`. What it can do is set by its Coolify
+permissions (`read`, `read:sensitive`, `write`, `deploy`, `root`); use the narrowest one that
+works. See [examples/credential-file.env.example](examples/credential-file.env.example).
+
+## Network mode
+
+`vbcdx-coolify serve` exposes the same tools over MCP Streamable HTTP:
+
+```sh
+VBCDX_COOLIFY_URL=https://coolify.example.com vbcdx-coolify serve
+# MCP endpoint: POST http://127.0.0.1:8080/mcp
+# Liveness:     GET  http://127.0.0.1:8080/healthz
+```
+
+In this mode there is no credential file. Each request carries its Coolify API token in the
+`Authorization` header (`Bearer <token>` or `token <token>`), which is used for that request only.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VBCDX_COOLIFY_HTTP_PORT` | `8080` | Listen port. |
+| `VBCDX_COOLIFY_HTTP_HOST` | `127.0.0.1` | Bind address. |
+| `VBCDX_COOLIFY_TLS_CERT` | none | PEM certificate path. Set together with the key to serve HTTPS. |
+| `VBCDX_COOLIFY_TLS_KEY` | none | PEM private key path. |
+| `VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS` | none | Comma-separated browser origins allowed to call the server. Requests with any other `Origin` header get `403`. |
+
+Without TLS settings the server speaks plain HTTP; run it behind a TLS-terminating reverse proxy or
+on a trusted network. Outbound connections to Coolify always verify TLS. Request bodies over 1 MiB
+are refused with `413`.
+
+### Docker
+
+```sh
+docker build -t vbcdx-coolify .
+docker run --rm -p 8080:8080 \
+  -e VBCDX_COOLIFY_URL=https://coolify.example.com \
+  vbcdx-coolify
+```
+
+The image runs `serve` as a non-root user, listens on all interfaces and includes a health check.
+No credentials are stored in the image.
+
+## Tools
+
+Run `vbcdx-coolify manifest` for every tool's input and output schema and required token
+permissions.
+
+| Effect | Tools |
+| --- | --- |
+| Read | `health`, `version`, `list_applications`, `get_application`, `get_application_logs`, `list_application_envs`, `list_databases`, `get_database`, `list_services`, `get_service`, `list_projects`, `get_project`, `list_servers`, `get_server`, `list_resources`, `list_deployments`, `get_deployment` |
+| Write (`write` or `full`) | `create_application`, `deploy`, `start_application`, `create_application_env`, `update_application_env` |
+| Destructive (`full` only) | `restart_application`, `stop_application`, `cancel_deployment`, `delete_application_env`, `delete_application` |
+
+Destructive tools also require an exact confirmation string naming the target. The confirmation
+guards against accidents; it is not an approval mechanism and is never sent to Coolify.
+
+### Results
+
+Each call returns a text summary and a JSON envelope with `outcome`, `effect`,
+`request` (`method`, `path`, `attempted`) and `verification`; failures add a `reason` and a
+`message`. HTTP status is checked before the response body, and a mutation whose outcome cannot be
+confirmed is reported as `unverified` or `indeterminate`.
 
 ## Development
 
 ```sh
 npm ci
-npm test        # node --test; route-level fixtures, adversarial cases, no network
+npm test
+node bin/vbcdx-coolify.js --help
 ```
-
-## Continuous integration
-
-CI (`.forgejo/workflows/ci.yml`) runs on a self-hosted runner chosen by the
-`CI_RUNNER_LABEL` repository (or org) variable, so the runner's label is not
-baked into the published source. If you fork this repo and run its Forgejo
-workflows, set `CI_RUNNER_LABEL` to a label your runner advertises (for a
-GitHub-parity self-hosted runner, `self-hosted`). If it is left unset the jobs
-are silently skipped — an empty `runs-on` matches no runner.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+[MIT](LICENSE)

@@ -1,4 +1,4 @@
-// Write tools (§5, §6).
+// Write tools (contract §5, contract §6).
 //
 // Ordinary configuration writes (create_application, env create/update) are
 // verified by read-back with the same credential snapshot; if read access is

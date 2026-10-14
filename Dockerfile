@@ -1,4 +1,4 @@
-# Container image for the network-served Coolify MCP server (issue #22).
+# Container image for the network-served Coolify MCP server.
 #
 # Runs `vbcdx-coolify serve` — MCP over Streamable HTTP, the Coolify API token
 # supplied per request in the Authorization header. No credential is baked into

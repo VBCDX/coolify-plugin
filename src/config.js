@@ -1,4 +1,4 @@
-// Server configuration and request limits (§3).
+// Server configuration and request limits (contract §3).
 //
 // Settings are read from the process environment into a plain object that is
 // isolated per instance — there is no module-global mutable config that a second
@@ -15,8 +15,33 @@ export const MAX_TIMEOUT_MS = 120000;
 
 const WRITE_LEVELS = ['off', 'write', 'full'];
 
+// A harness that writes `${VAR}` references (Hermes does, for a stdio server's settings)
+// passes the text through literally when VAR is unset. Such a value is never a real
+// setting, so it counts as unset: an optional setting then takes its default instead of
+// failing every call.
+const UNEXPANDED = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+
+/** True when `v` is exactly an unexpanded `${NAME}` reference (surrounding spaces allowed). */
+export function isUnexpanded(v) {
+  return typeof v === 'string' && UNEXPANDED.test(v.trim());
+}
+
 /**
- * Normalize a Coolify instance URL into its API base (§3).
+ * A copy of `env` without the VBCDX_COOLIFY_* values that are an unexpanded `${NAME}`.
+ * @param {Record<string,string|undefined>} env
+ * @returns {Record<string,string|undefined>}
+ */
+export function withoutUnexpanded(env) {
+  const out = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (k.startsWith('VBCDX_COOLIFY_') && isUnexpanded(v)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Normalize a Coolify instance URL into its API base (contract §3).
  *
  * Accepts an HTTP(S) URL with an optional deployment path prefix and an optional
  * trailing `/api/v1`; returns origin + prefix + `/api/v1` with the suffix
@@ -85,7 +110,8 @@ export function normalizeCoolifyUrl(raw) {
  * }}
  */
 export function loadConfig(env = process.env) {
-  // Write level. An invalid value behaves as off (§3), and is not a hard error.
+  env = withoutUnexpanded(env);
+  // Write level. An invalid value behaves as off (contract §3), and is not a hard error.
   const rawWrites = (env.VBCDX_COOLIFY_WRITES ?? 'off').trim();
   const writesInvalid = !WRITE_LEVELS.includes(rawWrites);
   const writes = writesInvalid ? 'off' : /** @type {'off'|'write'|'full'} */ (rawWrites);

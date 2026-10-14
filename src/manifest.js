@@ -1,4 +1,4 @@
-// Tool manifest (§7).
+// Tool manifest (contract §7).
 //
 // Deterministic, nonsecret JSON tool contract generated from the runtime registry
 // — no separate handwritten list. It contains no secret, role-file path, install

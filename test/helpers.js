@@ -9,8 +9,10 @@ import { executeTool } from '../src/registry.js';
 
 /**
  * Start a mock Coolify HTTP server. `routes` maps `"METHOD /api/v1/path"` (path
- * without query) to a responder `{ status, json?, text?, headers?, delayMs? }` or
- * a function `(req, bodyString, url) => responder`. Records every request.
+ * without query) to a responder `{ status, json?, text?, raw?, headers?, delayMs?,
+ * release? }` or a function `(req, bodyString, url) => responder`. `release` is a
+ * promise the response waits for, so a test can hold a request in flight for as
+ * long as it needs. Records every request.
  */
 export function mockCoolify(routes) {
   const requests = [];
@@ -43,7 +45,8 @@ export function mockCoolify(routes) {
         if (responder.raw) { res.end(responder.raw); return; }
         res.end(payload);
       };
-      if (responder.delayMs) setTimeout(send, responder.delayMs);
+      if (responder.release) responder.release.then(send); // held until the test releases it
+      else if (responder.delayMs) setTimeout(send, responder.delayMs);
       else send();
     });
   });
