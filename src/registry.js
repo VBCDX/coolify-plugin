@@ -5,7 +5,7 @@
 // come from here, so a new tool cannot be registered without also appearing in the
 // manifest and the tests that read the registry.
 //
-// Gate order (§4, §5): validate inputs → write gate → confirmation → server
+// Gate order (contract §4, contract §5): validate inputs → write gate → confirmation → server
 // config → credential file → HTTP. Gates run before any file read or network
 // call, so a disabled write or a bad confirmation never touches the credential
 // file or the instance.
@@ -18,7 +18,7 @@ import { loadConfig } from './config.js';
 import { readCredentialFile } from './credential.js';
 import { validateArgs } from './validate.js';
 import { RefusedError, refused, req, toMcpResult } from './envelope.js';
-import { unregisterSecret } from './redact.js';
+import { unregisterSecret, withSecretScope } from './redact.js';
 import { CoolifyClient, createDeadline } from './http.js';
 
 const CREDENTIAL_FILE_FIELD = {
@@ -126,6 +126,12 @@ function refusalRequest(config, tool, args) {
  *   validates against the schema without credential_file.
  */
 export async function executeTool(name, rawArgs, ctx = {}) {
+  // Each call gets its own redaction scope: its token is scrubbed from its own
+  // output only, and the scope ends with the call.
+  return withSecretScope(() => runTool(name, rawArgs, ctx));
+}
+
+async function runTool(name, rawArgs, ctx) {
   const tool = BY_NAME.get(name);
   if (!tool) {
     // The server guards against unknown tools; this is a defensive fallback.

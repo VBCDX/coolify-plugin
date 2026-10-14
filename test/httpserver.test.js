@@ -1,22 +1,23 @@
-// Network mode (serve): issue #22. Real MCP HTTP client against runHttpServer on an
+// Network mode (serve). Real MCP HTTP client against runHttpServer on an
 // ephemeral port, with the programmable mock Coolify from helpers.js as upstream.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import http from 'node:http';
-import { runHttpServer, MAX_BODY_BYTES } from '../src/httpserver.js';
+import { runHttpServer, MAX_BODY_BYTES, loadHttpOptions, parseAllowedOrigins, originAllowed } from '../src/httpserver.js';
+import { scrub } from '../src/redact.js';
 import { runCli } from '../src/cli.js';
 import { listTools } from '../src/registry.js';
 import { mockCoolify, envelopeOf } from './helpers.js';
 
 const TOKEN = 'SECRET-coolify-token-xyz789';
 
-async function withServe(routes, fn, { writes = 'off' } = {}) {
+async function withServe(routes, fn, { writes = 'off', env: envOver = {}, allowedOrigins } = {}) {
   const mock = await mockCoolify(routes);
-  const env = { VBCDX_COOLIFY_URL: mock.url, VBCDX_COOLIFY_WRITES: writes };
+  const env = { VBCDX_COOLIFY_URL: mock.url, VBCDX_COOLIFY_WRITES: writes, ...envOver };
   const logs = [];
-  const srv = await runHttpServer({ env, http: { port: 0, host: '127.0.0.1', certPath: null, keyPath: null }, log: (m) => logs.push(m), installSignals: false });
+  const srv = await runHttpServer({ env, http: { port: 0, host: '127.0.0.1', certPath: null, keyPath: null, allowedOrigins }, log: (m) => logs.push(m), installSignals: false });
   const base = `http://127.0.0.1:${srv.port}`;
   const client = async (authorization) => {
     const headers = authorization ? { Authorization: authorization } : {};
@@ -105,6 +106,9 @@ test('serve: a credential_file argument is rejected over HTTP', async () => {
     const c = await client(`Bearer ${TOKEN}`);
     const r = await c.callTool({ name: 'version', arguments: { credential_file: '/etc/passwd' } });
     assert.equal(r.isError, true);
+    // the real reason, not just any refusal
+    assert.equal(envelopeOf(r).reason, 'validation_failed');
+    assert.match(envelopeOf(r).message, /credential_file/);
     assert.equal(mock.requests.length, 0);
     await c.close();
   });
@@ -119,6 +123,164 @@ test('serve: the write gate still runs first (writes=off refuses before the cred
     assert.equal(mock.requests.length, 0);
     await c.close();
   });
+});
+
+// The other gates also refuse before the Authorization header
+// is read. None of these calls sends a header, so a credential-first order would
+// answer credential_missing instead.
+test('serve: a wrong destructive confirmation is refused before the credential', async () => {
+  await withServe({}, async ({ client, mock }) => {
+    const c = await client();
+    const r = await c.callTool({ name: 'restart_application', arguments: { uuid: 'abc', confirm: 'restart application xyz' } });
+    assert.equal(envelopeOf(r).reason, 'confirmation_mismatch');
+    assert.equal(mock.requests.length, 0);
+    await c.close();
+  }, { writes: 'full' });
+});
+
+test('serve: an unconfigured server is refused before the credential', async () => {
+  await withServe({}, async ({ client, mock }) => {
+    const c = await client();
+    const r = await c.callTool({ name: 'version', arguments: {} });
+    assert.equal(envelopeOf(r).reason, 'server_not_configured');
+    assert.equal(mock.requests.length, 0);
+    await c.close();
+  }, { env: { VBCDX_COOLIFY_URL: undefined } });
+});
+
+// The header token is released from the redactor when the call ends.
+test('serve: the Bearer token is no longer redacted once its call has finished', async () => {
+  await withServe({ 'GET /api/v1/version': { text: '4.1.2' } }, async ({ client }) => {
+    const c = await client(`Bearer ${TOKEN}`);
+    assert.notEqual((await c.callTool({ name: 'version', arguments: {} })).isError, true);
+    assert.equal(scrub(TOKEN), TOKEN);
+    await c.close();
+  });
+});
+
+// The per-call scope still redacts the call's OWN token: an upstream that echoes it
+// back must not put it in the result (the per-call redaction property).
+test('serve: a caller\'s own token echoed by Coolify is redacted from its result', async () => {
+  await withServe({ 'GET /api/v1/version': { text: TOKEN } }, async ({ client }) => {
+    const c = await client(`Bearer ${TOKEN}`);
+    const r = await c.callTool({ name: 'version', arguments: {} });
+    const text = r.content.map((x) => x.text).join('\n');
+    assert.doesNotMatch(text, /SECRET-coolify/);
+    assert.match(text, /<redacted>/);
+    // and the structured result, which Hermes and other MCP clients read
+    assert.doesNotMatch(JSON.stringify(r.structuredContent), /SECRET-coolify/);
+    await c.close();
+  });
+});
+
+// The text rendering once printed request.path unscrubbed, and a caller's
+// argument can land there (list_applications puts `tag` in the query string).
+test('serve: a caller\'s own token in a request argument is redacted from the text and structuredContent', async () => {
+  await withServe({ 'GET /api/v1/applications': { json: [] } }, async ({ client }) => {
+    const c = await client(`Bearer ${TOKEN}`);
+    const r = await c.callTool({ name: 'list_applications', arguments: { tag: TOKEN } });
+    assert.notEqual(r.isError, true);
+    const text = r.content.map((x) => x.text).join('\n');
+    assert.match(text, /request: GET .*<redacted>/);
+    assert.doesNotMatch(text, /SECRET-coolify/);
+    assert.doesNotMatch(JSON.stringify(r.structuredContent), /SECRET-coolify/);
+    await c.close();
+  });
+});
+
+// A token is scrubbed from its own call's output only. Caller A sends a
+// Bearer value that appears in caller B's result; while A's request is in flight,
+// B's result must still show it.
+test('serve: one caller\'s Bearer value never redacts another caller\'s concurrent result', async () => {
+  let aArrived;
+  const aSeen = new Promise((r) => { aArrived = r; });
+  // A's upstream answer is held until B's result is in: a fixed delay let a
+  // slow B finish after A and pass with the bug restored.
+  let releaseA;
+  const aReleased = new Promise((r) => { releaseA = r; });
+  const routes = {
+    'GET /api/v1/version': (req) => {
+      if (req.headers.authorization === 'Bearer 4.1.2') {
+        aArrived();
+        return { status: 401, json: { message: 'Unauthenticated.' }, release: aReleased };
+      }
+      return { text: '4.1.2' };
+    },
+  };
+  await withServe(routes, async ({ client }) => {
+    const a = await client('Bearer 4.1.2');
+    const b = await client(`Bearer ${TOKEN}`);
+    let aSettled = false;
+    const pendingA = a.callTool({ name: 'version', arguments: {} }).finally(() => { aSettled = true; });
+    await aSeen; // A's token is registered and its call is in flight
+    let rb;
+    try {
+      rb = await b.callTool({ name: 'version', arguments: {} });
+      assert.equal(aSettled, false, "A's call must still be in flight when B's result arrives");
+    } finally {
+      releaseA(); // never leave A's request held, even when an assert above fails
+    }
+    const text = rb.content.map((x) => x.text).join('\n');
+    assert.match(text, /4\.1\.2/);
+    assert.doesNotMatch(text, /<redacted>/);
+    const ra = await pendingA;
+    assert.equal(ra.isError, true);
+    await a.close();
+    await b.close();
+  });
+});
+
+// The MCP transport spec's MUST on Origin (DNS rebinding). Raw fetch,
+// because the SDK client never sends an Origin.
+function rawVersionCall(port, origin) {
+  const headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${TOKEN}` };
+  if (origin !== undefined) headers.origin = origin;
+  return fetch(`http://127.0.0.1:${port}/mcp`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'version', arguments: {} } }),
+  });
+}
+
+test('serve: any request carrying an Origin is refused with 403 before any Coolify request', async () => {
+  await withServe({ 'GET /api/v1/version': { text: '4.1.2' } }, async ({ port, mock }) => {
+    for (const origin of ['http://evil.example', 'http://127.0.0.1:8080', 'null', '']) {
+      const r = await rawVersionCall(port, origin);
+      assert.equal(r.status, 403, origin);
+      const text = await r.text();
+      assert.match(text, /Origin not allowed/);
+      if (origin.includes('://')) assert.doesNotMatch(text, new RegExp(origin.replace(/[.]/g, '\\.')));
+    }
+    const health = await fetch(`http://127.0.0.1:${port}/healthz`, { headers: { origin: 'http://evil.example' } });
+    assert.equal(health.status, 403);
+    assert.equal(mock.requests.length, 0);
+  });
+});
+
+test('serve: no Origin, or an allowed one (compared normalised), is served', async () => {
+  await withServe({ 'GET /api/v1/version': { text: '4.1.2' } }, async ({ port, mock }) => {
+    assert.equal((await rawVersionCall(port, undefined)).status, 200);
+    assert.equal((await rawVersionCall(port, 'https://CHAT.example.com:443')).status, 200);
+    assert.equal((await rawVersionCall(port, 'https://chat.example.com.evil.example')).status, 403);
+    assert.equal((await rawVersionCall(port, 'http://chat.example.com')).status, 403);
+    assert.equal(mock.requests.length, 2);
+  }, { allowedOrigins: ['https://chat.example.com'] });
+});
+
+test('serve: VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS is parsed strictly and a bad entry stops startup', async () => {
+  assert.deepEqual(parseAllowedOrigins(undefined), { allowedOrigins: [], originsError: null });
+  assert.deepEqual(parseAllowedOrigins(' https://a.example , http://b.example:8080 ,').allowedOrigins, ['https://a.example', 'http://b.example:8080']);
+  for (const bad of ['a.example', 'null', 'ftp://a.example', 'https://a.example/path', 'https://u:p@a.example', 'https://a.example?x=1', 'https://*.example.com', 'http://*:8080']) {
+    assert.match(parseAllowedOrigins(bad).originsError, /ALLOWED_ORIGINS/, bad);
+  }
+  assert.deepEqual(loadHttpOptions({ VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS: 'https://a.example' }).allowedOrigins, ['https://a.example']);
+  assert.equal(originAllowed(undefined, []), true);
+  assert.equal(originAllowed('https://a.example', []), false);
+  // A server that starts by mistake is closed again, so the test fails instead of hanging.
+  const outcome = await runHttpServer({ env: {}, http: { port: 0, host: '127.0.0.1', certPath: null, keyPath: null, originsError: 'VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS bad' }, log: () => {}, installSignals: false })
+    .then(async (srv) => { await srv.close(); return 'started'; }, (err) => err);
+  assert.ok(outcome instanceof Error, 'serve must not start with a bad allow-list');
+  assert.match(outcome.message, /ALLOWED_ORIGINS/);
 });
 
 test('cli: serve/healthcheck reject options; healthcheck probes a running serve', async () => {
@@ -209,7 +371,7 @@ test('serve: an oversized body is refused with 413 before any Coolify request', 
 
 // Stream more than the cap and never end the request: only a server that refuses
 // mid-stream answers. One that buffers until 'end' and then checks the size
-// (the #24 bug in another form) never responds, and the bounded wait fails.
+// (the unbounded-body bug in another form) never responds, and the bounded wait fails.
 function postUnterminated(port, bytes, waitMs) {
   return new Promise((resolve) => {
     let settled = false;

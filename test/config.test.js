@@ -15,8 +15,8 @@ test('normalizeCoolifyUrl: deployment prefix preserved', () => {
 });
 
 test('normalizeCoolifyUrl: http is allowed and flagged insecure', () => {
-  const r = normalizeCoolifyUrl('http://10.0.0.5:8000');
-  assert.equal(r.apiBase, 'http://10.0.0.5:8000/api/v1');
+  const r = normalizeCoolifyUrl('http://192.0.2.5:8000');
+  assert.equal(r.apiBase, 'http://192.0.2.5:8000/api/v1');
   assert.equal(r.insecure, true);
 });
 

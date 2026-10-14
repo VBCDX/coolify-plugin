@@ -5,7 +5,7 @@
 
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { registerSecret, clearSecrets, scrub } from '../src/redact.js';
+import { registerSecret, unregisterSecret, clearSecrets, scrub, scrubDeep, withSecretScope } from '../src/redact.js';
 
 afterEach(() => clearSecrets());
 
@@ -80,7 +80,7 @@ test('scrubbing works with multiple registered secrets at once', () => {
   assert.equal(out, 'first <redacted> then <redacted>');
 });
 
-// Finding 1 (Refs #12): when one registered secret is a proper substring of
+// When one registered secret is a proper substring of
 // another, redaction must be independent of registration order. The bug was that
 // iterating shorter-first split the longer secret and left its tail behind. The
 // short sentinel below is a proper prefix of the long one.
@@ -104,7 +104,7 @@ test('overlapping secrets registered longer-first also fully redact', () => {
   assert.equal(out, '<redacted>');
 });
 
-// Issue #15 (Refs #12): two secrets that overlap *partially* (neither contains
+// Two secrets that overlap *partially* (neither contains
 // the other) and appear adjacent in the same text used to leave a fragment and
 // stay order-dependent, because sequential split/join consumes the shared run
 // with the first secret so the second no longer matches. These two share the
@@ -144,7 +144,7 @@ test('back-to-back non-overlapping secrets redact to two separate markers', () =
   assert.equal(out, '<redacted><redacted>');
 });
 
-// Finding 2 (Refs #12): a null-prototype object cannot be String()-coerced and
+// A null-prototype object cannot be String()-coerced and
 // used to throw a TypeError, which stops the backstop from scrubbing at all.
 test('scrub does not throw on a null-prototype object', () => {
   const secret = 'sk-FAKE-SENTINEL-NEVER-REAL-0005';
@@ -157,8 +157,8 @@ test('scrub does not throw on a null-prototype object', () => {
   assert.ok(!out.includes(secret), 'no secret survives an un-coercible value');
 });
 
-// Issue #14 (Refs #12): the coercion fallback must itself be throw-proof. The
-// PR #13 fallback called `Object.prototype.toString.call(text)`, which reads
+// The coercion fallback must itself be throw-proof. An earlier
+// fallback called `Object.prototype.toString.call(text)`, which reads
 // `Symbol.toStringTag` — so a value whose tag lookup throws made the fallback
 // throw from inside the catch and scrub() propagated. The fix degrades to a
 // fixed constant. Each case below registers a secret, then asserts scrub()
@@ -237,7 +237,7 @@ test('scrub does not throw on a circular object', () => {
   assertBackstopHolds(circular, 'a circular object');
 });
 
-// Issue #20: on a coercion failure the fallback returns a fixed sentinel rather
+// On a coercion failure the fallback returns a fixed sentinel rather
 // than the empty string, so an operator still sees that a value was present but
 // unrenderable instead of silence. The sentinel is a literal constant, so it
 // keeps every leak-safety property (asserted throughout the tests above). A
@@ -247,4 +247,43 @@ test('scrub does not throw on a circular object', () => {
 test('scrub returns the <unrenderable> sentinel for an un-coercible input', () => {
   const weird = Object.create(null);
   assert.equal(scrub(weird), '<unrenderable>');
+});
+
+// A secret registered inside a call scope redacts that scope's output only;
+// one registered outside any scope is the process-wide backstop.
+test('withSecretScope: a scoped secret redacts only its own scope, and ends with it', async () => {
+  clearSecrets();
+  let releaseA;
+  const held = new Promise((r) => { releaseA = r; });
+  const a = withSecretScope(async () => {
+    registerSecret('shared-word');
+    assert.equal(scrub('x shared-word y'), 'x <redacted> y');
+    await held; // still registered while B runs
+    return scrub('shared-word');
+  });
+  const b = await withSecretScope(async () => scrub('B sees shared-word'));
+  assert.equal(b, 'B sees shared-word');
+  assert.equal(scrub('outside shared-word'), 'outside shared-word');
+  releaseA();
+  assert.equal(await a, '<redacted>');
+  assert.equal(scrub('after shared-word'), 'after shared-word');
+});
+
+test('withSecretScope: a process-wide secret still redacts inside every scope', async () => {
+  clearSecrets();
+  registerSecret('global-secret');
+  try {
+    assert.equal(await withSecretScope(async () => scrub('in global-secret')), 'in <redacted>');
+  } finally {
+    unregisterSecret('global-secret');
+  }
+  assert.equal(scrub('global-secret'), 'global-secret');
+});
+
+// A secret echoed as a JSON key must not survive in structuredContent.
+test('scrubDeep scrubs keys as well as string leaves, at any depth', () => {
+  registerSecret('SECRET-key-123');
+  const out = scrubDeep({ 'SECRET-key-123': 'v', nested: { 'x-SECRET-key-123': ['SECRET-key-123', 7] }, n: 1 });
+  assert.doesNotMatch(JSON.stringify(out), /SECRET-key-123/);
+  assert.deepEqual(out, { '<redacted>': 'v', nested: { 'x-<redacted>': ['<redacted>', 7] }, n: 1 });
 });

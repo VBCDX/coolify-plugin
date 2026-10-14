@@ -1,4 +1,4 @@
-// Result envelope construction (§5).
+// Result envelope construction (contract §5).
 //
 // Every tool returns complete text plus a matching structuredContent object that
 // conforms to the tool's declared outputSchema. Required fields: outcome, effect,
@@ -8,7 +8,7 @@
 // call" (the sibling plugin's defect class) cannot happen by forgetting a flag.
 
 import { ERROR_OUTCOMES, MAX_ENVELOPE_BYTES, REASONS, VERIFICATIONS } from './contract.js';
-import { scrub } from './redact.js';
+import { scrub, scrubDeep } from './redact.js';
 
 /**
  * A local, pre-network refusal. Thrown by gates and credential handling so the
@@ -109,8 +109,10 @@ export function indeterminate(effect, request, reason, message, opts) {
 
 /**
  * Turn an envelope into an MCP tool result. isError is derived from the outcome.
- * The text is a deterministic rendering of the same envelope, so the human-
- * readable content and the structuredContent can never disagree.
+ * The text is a deterministic rendering of the same envelope. Neither carries a
+ * registered secret: the whole rendered text goes through scrub(), and the
+ * structured copy goes through scrubDeep(), which covers keys too. They can
+ * still differ in layout, since the text is a summary, but not in what they reveal.
  *
  * @param {Envelope} env
  * @returns {{content: Array<{type:string,text:string}>, structuredContent: Envelope, isError: boolean}}
@@ -136,7 +138,7 @@ export function toMcpResult(env) {
   }
   return {
     content: [{ type: 'text', text }],
-    structuredContent: structured,
+    structuredContent: scrubDeep(structured),
     isError: ERROR_OUTCOMES.includes(structured.outcome),
   };
 }
@@ -163,5 +165,7 @@ function renderText(env) {
     lines.push('evidence:');
     lines.push(scrub(JSON.stringify(env.evidence, null, 2)));
   }
-  return lines.join('\n');
+  // Scrub the whole text, not only the data/evidence/message parts: request.path
+  // can carry a caller-supplied value, such as a query string.
+  return scrub(lines.join('\n'));
 }

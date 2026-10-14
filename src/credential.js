@@ -1,5 +1,5 @@
-// Credential file reading, grammar, and POSIX safety (§4; shared grammar from the
-// dev-agents spec §4).
+// Credential file reading, grammar, and POSIX safety (contract §4; the grammar is
+// shared with the vbcdx installer, which writes these files).
 //
 // Every tool except public `health` reads exactly one explicit absolute
 // credential_file at call time. There is no other path, token argument, directory

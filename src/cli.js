@@ -1,4 +1,4 @@
-// CLI dispatch (§1).
+// CLI dispatch (contract §1).
 //
 //   vbcdx-coolify mcp        stdio MCP server (no secret/URL/role/credential CLI options)
 //   vbcdx-coolify serve      network MCP server (Streamable HTTP; token per request by header)
@@ -31,9 +31,10 @@ Configuration is read from the environment (never from CLI options):
 
 Network mode (serve) additionally reads:
   VBCDX_COOLIFY_HTTP_PORT   Listen port (default 8080).
-  VBCDX_COOLIFY_HTTP_HOST   Bind address (default 0.0.0.0).
+  VBCDX_COOLIFY_HTTP_HOST   Bind address (default 127.0.0.1; the Docker image sets 0.0.0.0).
   VBCDX_COOLIFY_TLS_CERT    PEM certificate path; serve HTTPS directly when set with the key.
   VBCDX_COOLIFY_TLS_KEY     PEM private-key path (both cert and key, or neither).
+  VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS  Browser origins allowed to call serve (default none: any Origin gets 403).
   Endpoints: POST /mcp (MCP), GET /healthz. The Coolify API token arrives per request in
   Authorization: Bearer <token>, never from the environment or a file.
 

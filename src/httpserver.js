@@ -1,5 +1,5 @@
-// The `serve` command: a network-served MCP server (issue #22; port of
-// forgejo-plugin's network mode, VBCDX/forgejo-plugin#10).
+// The `serve` command: a network-served MCP server (contract §3, contract §4; the same
+// design as @vbcdx/forgejo-plugin's network mode).
 //
 // Transport is MCP Streamable HTTP (responses streamed as Server-Sent Events) in
 // stateless mode: a fresh MCP server and transport per request, so there is no
@@ -11,6 +11,17 @@
 // a redacted, actionable refusal. The gate order, write gate, destructive
 // confirmation, finite catalogue and redaction are identical to stdio — only the
 // transport and the credential source change.
+//
+// Origin (DNS rebinding): the MCP transport spec says servers MUST
+// validate the Origin header on every incoming connection. Server-to-server
+// clients (the SDK client, LiteLLM's MCP client) send none, so a request that
+// carries an Origin is refused with 403 unless VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS
+// lists it. SDK 1.30.0's allowedOrigins cannot express "refuse every Origin", so
+// the check lives here, before routing. It protects POST /mcp, which a browser
+// always sends with an Origin. It does not protect a same-origin GET such as
+// /healthz after a DNS rebind: browsers send no Origin on same-origin GET/HEAD.
+// /healthz returns only status, service, contract and the tool count; do
+// not add anything sensitive to a GET route on the strength of this check.
 
 import http from 'node:http';
 import https from 'node:https';
@@ -19,7 +30,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { CONTRACT, SERVICE } from './contract.js';
-import { loadConfig } from './config.js';
+import { loadConfig, withoutUnexpanded, isUnexpanded } from './config.js';
 import { executeTool, listTools, toolCount } from './registry.js';
 import { credentialFromHeader } from './credential-header.js';
 import { packageVersion } from './version.js';
@@ -28,9 +39,11 @@ export const DEFAULT_HTTP_PORT = 8080;
 // Largest POST /mcp body accepted. The biggest tool argument is an env value or a
 // compose snippet; 1 MiB is ample. The body is read before any credential is
 // checked, so without a cap any caller could make the process buffer an
-// arbitrarily large payload (PR #23 review, issue #24).
+// arbitrarily large payload.
 export const MAX_BODY_BYTES = 1024 * 1024;
 const MCP_PATH = '/mcp';
+// Network settings an unexpanded reference must not silently drop (see loadHttpOptions).
+const FAIL_CLOSED_SETTINGS = ['VBCDX_COOLIFY_TLS_CERT', 'VBCDX_COOLIFY_TLS_KEY', 'VBCDX_COOLIFY_HTTP_HOST'];
 const HEALTH_PATH = '/healthz';
 
 function stderrLog(msg) {
@@ -39,6 +52,16 @@ function stderrLog(msg) {
 
 /** Network options from the environment. Credentials are deliberately absent. */
 export function loadHttpOptions(env = process.env) {
+  // These choose HTTPS and the listening interface. An unexpanded reference for one of them
+  // means the operator meant a value the harness did not supply, so serve refuses to start
+  // rather than falling back to cleartext or every interface (fail closed). Every other
+  // setting falls back to its default, which is the safe choice for it.
+  const unresolved = FAIL_CLOSED_SETTINGS.filter((k) => isUnexpanded(env[k]));
+  const one = unresolved.length === 1;
+  const unexpandedError = unresolved.length
+    ? `${unresolved.join(', ')} ${one ? 'is' : 'are'} an unexpanded \${...} reference; set ${one ? 'it' : 'them'} to a real value or leave ${one ? 'it' : 'them'} unset.`
+    : null;
+  env = withoutUnexpanded(env);
   const trimmed = (k) => (env[k] !== undefined && String(env[k]).trim() !== '' ? String(env[k]).trim() : null);
   let port = DEFAULT_HTTP_PORT;
   let portError = null;
@@ -52,11 +75,57 @@ export function loadHttpOptions(env = process.env) {
   }
   return {
     port,
-    host: trimmed('VBCDX_COOLIFY_HTTP_HOST') || '0.0.0.0',
+    // Loopback unless told otherwise outside the container image; the
+    // image sets VBCDX_COOLIFY_HTTP_HOST=0.0.0.0 itself.
+    host: trimmed('VBCDX_COOLIFY_HTTP_HOST') || '127.0.0.1',
     certPath: trimmed('VBCDX_COOLIFY_TLS_CERT'),
     keyPath: trimmed('VBCDX_COOLIFY_TLS_KEY'),
     portError,
+    unexpandedError,
+    ...parseAllowedOrigins(env.VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS),
   };
+}
+
+// Browser Origin form: scheme://host[:port], normalised by URL (lower case,
+// default port dropped). Anything else, including the opaque "null", is not an
+// origin a browser page could be allowed from.
+function normalizeOrigin(value) {
+  try {
+    const u = new URL(String(value).trim());
+    if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.origin === 'null') return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS: comma-separated origins such as
+ * `https://chat.example.com`. Unset or empty = no Origin is allowed.
+ * @returns {{ allowedOrigins: string[], originsError: string|null }}
+ */
+export function parseAllowedOrigins(raw) {
+  const allowedOrigins = [];
+  if (raw === undefined || String(raw).trim() === '') return { allowedOrigins, originsError: null };
+  for (const part of String(raw).split(',')) {
+    if (part.trim() === '') continue;
+    const o = normalizeOrigin(part);
+    // An origin has no path, query, fragment or credentials; refuse an entry
+    // that does rather than silently widening it to its origin.
+    const u = o === null ? null : new URL(part.trim());
+    if (u === null || u.pathname !== '/' || u.search || u.hash || u.username || u.password || u.hostname.includes('*')) {
+      return { allowedOrigins: [], originsError: 'VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS must be comma-separated http(s) origins (scheme://host[:port]).' };
+    }
+    allowedOrigins.push(o);
+  }
+  return { allowedOrigins, originsError: null };
+}
+
+/** True when the request carries no Origin, or one that is explicitly allowed. */
+export function originAllowed(originHeader, allowedOrigins = []) {
+  if (originHeader === undefined) return true;
+  const o = normalizeOrigin(originHeader);
+  return o !== null && allowedOrigins.includes(o);
 }
 
 /**
@@ -66,7 +135,8 @@ export function loadHttpOptions(env = process.env) {
  * @returns {Promise<boolean>}
  */
 export function httpHealthcheck({ env = process.env } = {}) {
-  const { port, certPath, keyPath } = loadHttpOptions(env);
+  const { port, certPath, keyPath, unexpandedError } = loadHttpOptions(env);
+  if (unexpandedError) return Promise.resolve(false); // serve refuses to start with these settings
   const tls = !!(certPath && keyPath);
   const lib = tls ? https : http;
   const options = { host: '127.0.0.1', port, path: HEALTH_PATH, method: 'GET', timeout: 3000 };
@@ -151,8 +221,14 @@ function readBody(req, limit = MAX_BODY_BYTES) {
   });
 }
 
-async function handle(req, res, { env, shutdownController }) {
+async function handle(req, res, { env, shutdownController, allowedOrigins }) {
   const path = new URL(req.url, 'http://localhost').pathname;
+  // Before routing, so a browser request that carries a foreign Origin gets no
+  // answer on any path. A same-origin GET carries none (see the top of the file).
+  // The value is never echoed.
+  if (!originAllowed(req.headers.origin, allowedOrigins)) {
+    return sendJsonRpcError(res, 403, -32000, 'Origin not allowed. Browser pages cannot call this server unless VBCDX_COOLIFY_HTTP_ALLOWED_ORIGINS lists their origin.');
+  }
   if (req.method === 'GET' && path === HEALTH_PATH) {
     return sendJson(res, 200, { status: 'ok', service: SERVICE, contract: CONTRACT, tools: toolCount() });
   }
@@ -204,12 +280,14 @@ function wrap(ctx) {
  * @returns {Promise<{ server: import('node:http').Server, port: number, close: () => Promise<void> }>}
  */
 export async function runHttpServer({ env = process.env, http: httpOpts = loadHttpOptions(env), log = stderrLog, installSignals = true } = {}) {
+  if (httpOpts.unexpandedError) throw new Error(httpOpts.unexpandedError);
   if (httpOpts.portError) throw new Error(httpOpts.portError);
+  if (httpOpts.originsError) throw new Error(httpOpts.originsError);
   if (!!httpOpts.certPath !== !!httpOpts.keyPath) {
     throw new Error('TLS requires both VBCDX_COOLIFY_TLS_CERT and VBCDX_COOLIFY_TLS_KEY, or neither.');
   }
   const shutdownController = new AbortController();
-  const ctx = { env, shutdownController, log };
+  const ctx = { env, shutdownController, log, allowedOrigins: httpOpts.allowedOrigins || [] };
   let listener;
   let tls = false;
   if (httpOpts.certPath) {

@@ -1,4 +1,4 @@
-// Per-request credential resolution for the network transport (issue #22).
+// Per-request credential resolution for the network transport (contract §4).
 //
 // The stdio server reads a credential *file*; the network server instead takes
 // the Coolify API token from the request's `Authorization` header — one header,

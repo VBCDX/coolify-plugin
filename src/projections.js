@@ -1,4 +1,4 @@
-// Bounded projections (§6).
+// Bounded projections (contract §6).
 //
 // Read tools never return raw settings, Compose, or secrets. Each projection
 // copies only the listed fields, omitting optional ones when absent. Env values

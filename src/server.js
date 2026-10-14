@@ -1,4 +1,4 @@
-// MCP stdio server (§1, §3).
+// MCP stdio server (contract §1, contract §3).
 //
 // The full tool catalog is exposed even without service settings or credentials,
 // so discovery always works. Only protocol frames go to stdout; every diagnostic

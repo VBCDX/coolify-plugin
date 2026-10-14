@@ -1,4 +1,4 @@
-// Read tools (§6). Every read issues GET only and never turns an error into an
+// Read tools (contract §6). Every read issues GET only and never turns an error into an
 // empty list: a non-2xx status, a malformed body, or an unexpected shape is a
 // failure, not zero results.
 

@@ -1,47 +1,53 @@
 {
   "name": "@vbcdx/coolify-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for a bounded, write-controlled subset of the Coolify v4 API (contract vbcdx.coolify/1).",
   "type": "module",
   "license": "MIT",
-  "author": "VBCDX Team",
+  "author": "VBCDX",
   "bin": {
     "vbcdx-coolify": "bin/vbcdx-coolify.js"
   },
   "exports": {
     ".": "./src/index.js",
-    "./manifest": "./src/manifest.js"
+    "./manifest": "./src/manifest.js",
+    "./package.json": "./package.json"
   },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "test": "node --test",
-    "manifest": "node bin/vbcdx-coolify.js manifest"
+    "manifest": "node bin/vbcdx-coolify.js manifest",
+    "lint": "node scripts/lint.mjs"
   },
   "keywords": [
     "mcp",
     "coolify",
-    "vbcdx",
-    "dsh"
+    "vbcdx"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@modelcontextprotocol/sdk": "1.32.1"
   },
   "publishConfig": {
     "access": "public"
   },
-  "dsh": {
-    "plugin": true,
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  },
   "files": [
     "bin",
     "src",
-    "cordis.patch.yml",
     "examples",
-    "README.md"
-  ]
+    "docs",
+    "README.md",
+    "LICENSE",
+    "vbcdx.json",
+    ".env.example"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VBCDX/coolify-plugin.git"
+  },
+  "homepage": "https://github.com/VBCDX/coolify-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/VBCDX/coolify-plugin/issues"
+  }
 }

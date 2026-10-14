@@ -8,34 +8,56 @@
 // a raw OS or upstream buffer through to output; everything user-visible is
 // built from fixed strings and values we have deliberately allowed.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 /**
- * Active-call secrets to scrub from any diagnostic string. Reference-counted so
- * concurrent calls with different (or identical) credential files each register
- * and release their own token without one call clearing another's — the registry
- * is process-wide but the lifetime is per-call.
+ * Process-wide secrets: the backstop for a secret registered outside any tool
+ * call. Reference-counted so identical registrations release independently.
  * @type {Map<string, number>}
  */
 const activeSecrets = new Map();
 
+/**
+ * Per-call secrets. executeTool runs each call inside its own scope,
+ * so a token registered during a call is scrubbed from that call's output only.
+ * With one process-wide set, `serve` let any caller's Bearer value (valid or not)
+ * over-redact every concurrent caller's result while its request was in flight.
+ * @type {AsyncLocalStorage<Map<string, number>>}
+ */
+const callSecrets = new AsyncLocalStorage();
+
+/** Run `fn` with a fresh per-call secret scope; secrets registered inside it die with it. */
+export function withSecretScope(fn) {
+  return callSecrets.run(new Map(), fn);
+}
+
+/** The set a registration goes to: the current call's, else the process-wide one. */
+function currentSecrets() {
+  return callSecrets.getStore() ?? activeSecrets;
+}
+
 /** Register a secret value to be scrubbed from diagnostics during a call. */
 export function registerSecret(value) {
   if (typeof value === 'string' && value.length > 0) {
-    activeSecrets.set(value, (activeSecrets.get(value) || 0) + 1);
+    const m = currentSecrets();
+    m.set(value, (m.get(value) || 0) + 1);
   }
 }
 
 /** Release one registration of a secret. Call in a finally after each call. */
 export function unregisterSecret(value) {
   if (typeof value !== 'string' || value.length === 0) return;
-  const n = activeSecrets.get(value);
+  const m = currentSecrets();
+  const n = m.get(value);
   if (n === undefined) return;
-  if (n <= 1) activeSecrets.delete(value);
-  else activeSecrets.set(value, n - 1);
+  if (n <= 1) m.delete(value);
+  else m.set(value, n - 1);
 }
 
 /** Clear all registered secrets (defensive; used by tests). */
 export function clearSecrets() {
   activeSecrets.clear();
+  callSecrets.getStore()?.clear();
 }
 
 /**
@@ -44,7 +66,7 @@ export function clearSecrets() {
  * into strings, but a defensive scrub means an accidental interpolation degrades
  * to `<redacted>` rather than leaking.
  *
- * Known limitations, deliberately not "fixed" (see PR discussion, Refs #12):
+ * Known limitations, deliberately not "fixed":
  *   - Unicode normalization: a secret registered in one form (e.g. NFC) will not
  *     match the same glyphs supplied in another (NFD). Nothing in the pipeline
  *     re-normalizes a credential between registration and output, so the mismatch
@@ -97,10 +119,13 @@ export function scrub(text) {
   // registration order. Matching spans against the untouched original and
   // merging overlaps closes both the containment case and the partial-overlap
   // case, order-independently.
-  if (activeSecrets.size > 0) {
+  // The process-wide backstop plus the current call's own secrets, never another
+  // call's.
+  const secrets = [...activeSecrets.keys(), ...(callSecrets.getStore()?.keys() ?? [])];
+  if (secrets.length > 0) {
     /** @type {Array<[number, number]>} half-open [start, end) match spans */
     const spans = [];
-    for (const secret of activeSecrets.keys()) {
+    for (const secret of secrets) {
       if (!secret) continue;
       // Non-overlapping matches of a single secret: advance past each hit so a
       // repeated secret yields one span per occurrence.
@@ -156,4 +181,25 @@ export function safePath(p) {
   return s.replace(/[\x00-\x1f\x7f]/g, (c) =>
     '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'),
   );
+}
+
+/**
+ * A copy of `value` with every string leaf AND every key scrubbed; non-string
+ * leaves are kept. A result's structuredContent goes through this so it carries no
+ * registered secret: an upstream that echoes the caller's token, as a value
+ * or as a JSON key, must not put it in the structured result. Two keys that scrub
+ * to the same text collide and the later one wins: lossy, but never a leak.
+ *
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+export function scrubDeep(value, ancestors = []) {
+  if (typeof value === 'string') return scrub(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (ancestors.includes(value)) return '<circular>';
+  const path = [...ancestors, value];
+  if (Array.isArray(value)) return value.map((v) => scrubDeep(v, path));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) out[scrub(k)] = scrubDeep(v, path);
+  return out;
 }

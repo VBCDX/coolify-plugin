@@ -1,6 +1,7 @@
 // Fixed contract vocabulary for vbcdx.coolify/1.
+// Section references (`contract §N`) point at docs/contract.md.
 //
-// These enums are the spec's, verbatim. They are the single source the manifest,
+// These enums are the contract's, verbatim. They are the single source the manifest,
 // the output schemas, and the runtime all read from, so a new outcome or reason
 // cannot exist in one place and not another.
 
@@ -12,7 +13,7 @@ export const SCHEMA_VERSION = 1;
 export const EFFECTS = Object.freeze(['read', 'write', 'destructive']);
 
 /**
- * Coolify token permissions (§4). Descriptive only — the server never infers
+ * Coolify token permissions (contract §4). Descriptive only — the server never infers
  * permission from these; the token and the service decide. We record what a tool
  * needs so an operator can provision an appropriately scoped token.
  */
@@ -25,7 +26,7 @@ export const PERMISSIONS = Object.freeze([
   'public',
 ]);
 
-/** Result outcomes (§5). */
+/** Result outcomes (contract §5). */
 export const OUTCOMES = Object.freeze([
   'ok',
   'accepted',
@@ -38,7 +39,7 @@ export const OUTCOMES = Object.freeze([
 /** Outcomes that set MCP isError:true. */
 export const ERROR_OUTCOMES = Object.freeze(['refused', 'failed', 'unverified', 'indeterminate']);
 
-/** Verification states (§5). */
+/** Verification states (contract §5). */
 export const VERIFICATIONS = Object.freeze([
   'not_applicable',
   'confirmed',
@@ -47,7 +48,7 @@ export const VERIFICATIONS = Object.freeze([
   'mismatch',
 ]);
 
-/** Fixed reason codes (§4, §5). */
+/** Fixed reason codes (contract §4, contract §5). */
 export const REASONS = Object.freeze([
   // credential/local
   'credential_not_absolute',
@@ -78,16 +79,16 @@ export const REASONS = Object.freeze([
   'unsupported_operation',
 ]);
 
-/** Envelope byte ceiling (§3): tool envelopes limited to 256 KiB. */
+/** Envelope byte ceiling (contract §3): tool envelopes limited to 256 KiB. */
 export const MAX_ENVELOPE_BYTES = 256 * 1024;
 
-/** Upstream body ceiling (§3): 2 MiB before parsing. */
+/** Upstream body ceiling (contract §3): 2 MiB before parsing. */
 export const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
-/** Text/log excerpt ceiling (§3): 64 KiB with explicit truncation. */
+/** Text/log excerpt ceiling (contract §3): 64 KiB with explicit truncation. */
 export const MAX_TEXT_BYTES = 64 * 1024;
 
-/** `build_pack` enum (§6). */
+/** `build_pack` enum (contract §6). */
 export const BUILD_PACKS = Object.freeze([
   'nixpacks',
   'railpack',

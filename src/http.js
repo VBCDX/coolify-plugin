@@ -1,4 +1,4 @@
-// Thin fetch client for the Coolify v4 API (§3).
+// Thin fetch client for the Coolify v4 API (contract §3).
 //
 // - Builds only routes beneath the configured API origin/prefix; path and query
 //   components are encoded here.
